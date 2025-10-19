@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Anime Multi-level Space Shooter — Full (Preview Enabled)</title>
+  <style>
+    :root{--bg1:#061025;--bg2:#081229;--accent:#ff6fcf;--accent2:#66e0ff}
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, sans-serif;background:linear-gradient(180deg,var(--bg1),var(--bg2));color:#eef}
+    #gameWrap{width:980px;max-width:96vw;margin:18px auto;padding:14px;border-radius:14px;box-shadow:0 10px 30px rgba(2,6,23,.6);background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.03));}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+    h1{font-size:18px;margin:0;color:var(--accent)}
+    .controls{font-size:13px;opacity:.95}
+    canvas{display:block;background:radial-gradient(ellipse at 30% 20%, rgba(255,111,207,.04) 0%, transparent 10%), linear-gradient(180deg, rgba(0,0,0,0.25), transparent 40%), #02061a;border-radius:10px;width:100%;height:640px}
+    .hud{display:flex;gap:12px;align-items:center;font-size:14px;margin-top:8px}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 12px;border-radius:8px;color:#fff;cursor:pointer}
+    .note{font-size:12px;opacity:.8}
+    #levelSelect{display:flex;gap:10px;justify-content:center;margin-top:12px}
+    .lvlBtn{width:120px;height:64px;border-radius:10px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.04));display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;border:1px solid rgba(255,255,255,0.04)}
+    .locked{opacity:0.45;position:relative}
+    .lockIcon{position:absolute;top:6px;right:8px;font-size:14px}
+    .msg{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;background:rgba(0,0,0,0.6);padding:10px 16px;border-radius:8px;font-size:13px;display:none}
+    .centerOverlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);}    
+    .bigBtn{padding:10px 18px;border-radius:10px;border:1px solid rgba(0,0,0,0.12);background:#ffffff;color:#000000;cursor:pointer;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,0.18);} .bigBtn:hover{transform:translateY(-4px);box-shadow:0 10px 24px rgba(0,0,0,0.22);} 
+    /* Victory visuals */
+    @keyframes burst{0%{transform:scale(0);opacity:1}80%{transform:scale(4);opacity:0.4}100%{transform:scale(6);opacity:0}}
+    @keyframes winText{0%{opacity:0;transform:scale(0.8) rotate(-10deg)}50%{opacity:1;transform:scale(1.1) rotate(5deg)}100%{opacity:1;transform:scale(1) rotate(0)}}
+  </style>
+</head>
+<body>
+  <div id="gameWrap">
+    <header>
+      <h1>Anime Multi-level Space Shooter</h1>
+      <div class="controls">Auto-fire | Move: ← → or A D | Pause: P | Restart: R</div>
+    </header>
+
+    <div id="homeScreen">
+      <div style="text-align:center;margin-bottom:8px;color:#cfe">Select Level</div>
+      <div id="levelSelect"></div>
+      <div style="text-align:center;margin-top:12px;color:#9fb;opacity:.9">Complete a level to unlock the next. Level 5 is a Boss (music on).</div>
+    </div>
+
+    <canvas id="c"></canvas>
+
+    <div class="hud">
+      <div id="score">Score: 0</div>
+      <div id="levelInfo">Level: 1</div>
+      <div id="status">Status: Ready</div>
+      <button id="pauseBtn" class="btn">Pause</button>
+      <div class="note">Player HP shown above ship. Enemies shoot downwards.</div>
+    </div>
+
+    <div id="overlay" style="display:none;position:relative;height:0"></div>
+    <div id="msg" class="msg"></div>
+  </div>
+
+<script>
+// Full playable single-file game with 5 levels, boss, victory animation & sound, preview-ready.
+
+// Canvas
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = canvas.width = 960, H = canvas.height = 640;
+function resize(){const rect=canvas.getBoundingClientRect();canvas.width=Math.min(960,Math.max(420,rect.width));canvas.height=640*(canvas.width/960);W=canvas.width;H=canvas.height;}window.addEventListener('resize',resize);resize();
+
+// UI
+const homeScreen = document.getElementById('homeScreen');
+const levelSelect = document.getElementById('levelSelect');
+const scoreEl = document.getElementById('score');
+const statusEl = document.getElementById('status');
+const levelInfoEl = document.getElementById('levelInfo');
+const pauseBtn = document.getElementById('pauseBtn');
+const overlay = document.getElementById('overlay');
+const msgEl = document.getElementById('msg');
+
+// Input
+const keys = {};
+window.addEventListener('keydown',e=>{keys[e.code]=true; if(e.code==='Space') e.preventDefault();});
+window.addEventListener('keyup',e=>{keys[e.code]=false;});
+
+// Persistence
+const STORAGE_KEY = 'anime_shooter_unlocked_v1';
+let unlocked = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[1,0,0,0,0]');
+
+// Game state
+let currentLevel = 1; let score = 0; let playing=false; let paused=false; let gameOver=false; let levelComplete=false;
+
+// Player
+const player = {x:W/2,y:H-80,w:48,h:64,speed:6,bullets:[],cooldown:0,hp:5,maxHp:5};
+let enemies=[]; let eBullets=[]; let last = performance.now();
+
+// Audio (simple WebAudio sounds + boss music)
+const AudioCtx = window.AudioContext||window.webkitAudioContext; let audioCtx=null; let masterGain=null; let muted=false; let bossNodes=[];
+function initAudio(){ if(audioCtx) return; audioCtx=new AudioCtx(); masterGain=audioCtx.createGain(); masterGain.gain.value=0.9; masterGain.connect(audioCtx.destination);} 
+function playShot(){ if(muted) return; initAudio(); const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='sawtooth'; o.frequency.setValueAtTime(1200,audioCtx.currentTime); g.gain.setValueAtTime(0.18,audioCtx.currentTime); o.connect(g); g.connect(masterGain); o.frequency.exponentialRampToValueAtTime(600,audioCtx.currentTime+0.12); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.15); o.start(); o.stop(audioCtx.currentTime+0.16);} 
+function playExplosion(){ if(muted) return; initAudio(); const bufferSize=audioCtx.sampleRate*0.25; const buffer=audioCtx.createBuffer(1,bufferSize,audioCtx.sampleRate); const data=buffer.getChannelData(0); for(let i=0;i<bufferSize;i++){ data[i]=(Math.random()*2-1)*(1-i/bufferSize)*0.7; } const src=audioCtx.createBufferSource(); src.buffer=buffer; const g=audioCtx.createGain(); g.gain.value=0.9; src.connect(g); g.connect(masterGain); src.start(); }
+function playHit(){ if(muted) return; initAudio(); const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='square'; o.frequency.setValueAtTime(420,audioCtx.currentTime); g.gain.setValueAtTime(0.25,audioCtx.currentTime); o.connect(g); g.connect(masterGain); o.frequency.exponentialRampToValueAtTime(200,audioCtx.currentTime+0.18); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.18); o.start(); o.stop(audioCtx.currentTime+0.2);} 
+function playWin(){ if(muted) return; initAudio(); const now=audioCtx.currentTime; const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(880,now); g.gain.setValueAtTime(0.001,now); o.connect(g); g.connect(masterGain); g.gain.linearRampToValueAtTime(0.28,now+0.02); o.frequency.exponentialRampToValueAtTime(1320,now+0.28); g.gain.exponentialRampToValueAtTime(0.0001,now+1.2); o.start(); o.stop(now+1.2);} 
+function playGameOver(){ if(muted) return; initAudio(); const now=audioCtx.currentTime; const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(220,now); g.gain.setValueAtTime(0.6,now); o.connect(g); g.connect(masterGain); o.frequency.exponentialRampToValueAtTime(80,now+1.2); g.gain.exponentialRampToValueAtTime(0.0001,now+1.4); o.start(); o.stop(now+1.4);} 
+function startBossMusic(){ if(muted) return; initAudio(); stopBossMusic(); const pad=audioCtx.createOscillator(); pad.type='sawtooth'; pad.frequency.value=110; const padG=audioCtx.createGain(); padG.gain.value=0.05; pad.connect(padG); padG.connect(masterGain); pad.start(); const bass=audioCtx.createOscillator(); bass.type='square'; bass.frequency.value=55; const bassG=audioCtx.createGain(); bassG.gain.value=0.08; bass.connect(bassG); bassG.connect(masterGain); bass.start(); bossNodes.push(pad,padG,bass,bassG); // simple pulse loop
+ let running=true; function pulse(){ if(!running) return; const now=audioCtx.currentTime; const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='triangle'; o.frequency.value=200; g.gain.value=0.25; o.connect(g); g.connect(masterGain); o.start(now); o.stop(now+0.12); setTimeout(pulse,500);} pulse(); bossNodes.pulseStop=()=>{running=false;}; }
+function stopBossMusic(){ if(!audioCtx) return; try{ if(bossNodes.pulseStop) bossNodes.pulseStop(); bossNodes.forEach(n=>{ try{ n.stop && n.stop(); n.disconnect && n.disconnect(); }catch(e){} }); }catch(e){} bossNodes=[]; }
+
+// drawing helpers
+function drawPlayer(x,y,w,h){ ctx.save(); ctx.translate(x,y); const grad=ctx.createLinearGradient(-w/2,-h/2,w/2,h/2); grad.addColorStop(0,'#ffd6f0'); grad.addColorStop(1,'#ff6fcf'); ctx.fillStyle=grad; ctx.beginPath(); ctx.moveTo(0,-h*0.5); ctx.lineTo(w*0.6,h*0.2); ctx.quadraticCurveTo(0,h*0.9,-w*0.6,h*0.2); ctx.closePath(); ctx.fill(); ctx.beginPath(); ctx.ellipse(0,-h*0.06,w*0.22,h*0.16,0,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fill(); ctx.restore(); }
+function drawEnemy(en){ ctx.save(); ctx.translate(en.x,en.y); ctx.beginPath(); ctx.moveTo(-en.w/2,en.h/4); ctx.quadraticCurveTo(0,-en.h/1.2,en.w/2,en.h/4); ctx.lineTo(en.w/2,en.h/2); ctx.quadraticCurveTo(0,en.h*0.9,-en.w/2,en.h/2); ctx.closePath(); const g=ctx.createLinearGradient(-en.w/2,0,en.w/2,0); g.addColorStop(0,'#66e0ff'); g.addColorStop(1,'#66a3ff'); ctx.fillStyle=g; ctx.fill(); ctx.fillStyle='white'; ctx.beginPath(); ctx.ellipse(-en.w*0.18,-2,6,10,0,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.ellipse(en.w*0.18,-2,6,10,0,0,Math.PI*2); ctx.fill(); ctx.restore(); }
+function drawBullet(b){ ctx.save(); ctx.translate(b.x,b.y); ctx.beginPath(); ctx.rect(-b.w/2,-b.h/2,b.w,b.h); ctx.fillStyle=b.color||'#fff'; ctx.fill(); ctx.restore(); }
+
+// level setup
+function setupLevel(n){ currentLevel=n; levelInfoEl.textContent='Level: '+n; enemies=[]; eBullets=[]; player.bullets=[]; player.hp=player.maxHp; player.x=W/2; player.y=H-80; player.cooldown=0; gameOver=false; levelComplete=false; playing=true; statusEl.textContent='Status: Playing'; if(n===5) startBossMusic(); else stopBossMusic(); if(n===5){ enemies.push({x:W/2,y:120,w:220,h:120,alive:true,boss:true,hp:12,phase:0,shotTimer:900}); return; } const base={cols:5,rows:2,spacingX:W*0.14,startY:80}; let rows=2,cols=5,speedFactor=1,shootFreq=1200; if(n===1){rows=2;shootFreq=1700;speedFactor=0.9;} if(n===2){shootFreq=1300;} if(n===3){rows=3;cols=6;shootFreq=1200;speedFactor=1.1;} if(n===4){rows=3;cols=6;shootFreq=900;speedFactor=1.25;} const startX=W*0.12; for(let r=0;r<rows;r++){ for(let c=0;c<cols;c++){ const ex=startX+c*base.spacingX+(Math.random()*8-4); const ey=base.startY+r*72+(Math.random()*6-3); enemies.push({x:ex,y:ey,w:52,h:42,row:r,col:c,alive:true,shotTimer:shootFreq+Math.random()*800,offsetPhase:Math.random()*Math.PI*2,speedFactor:speedFactor}); } } }
+
+// collisions
+function pointInRect(px,py,rx,ry,rw,rh){return px>=rx && px<=rx+rw && py>=ry && py<=ry+rh;} function rectsOverlap(ax,ay,aw,ah,bx,by,bw,bh){return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by;}
+
+// update
+function update(dt){ if(!playing || paused) return; if(keys['ArrowLeft']||keys['KeyA']) player.x-=player.speed; if(keys['ArrowRight']||keys['KeyD']) player.x+=player.speed; player.x=Math.max(34,Math.min(W-34,player.x)); if(player.cooldown>0) player.cooldown-=dt; if(player.cooldown<=0){ player.bullets.push({x:player.x,y:player.y-30,vy:-10,w:6,h:14,color:'#fff'}); player.cooldown=180; playShot(); } player.bullets.forEach(b=>b.y+=b.vy); player.bullets=player.bullets.filter(b=>b.y>-30);
+ enemies.forEach((en,i)=>{ if(!en.alive) return; if(en.boss){ en.phase+=dt/1000; en.x=W/2+Math.sin(en.phase*0.8)*120; en.y=120+Math.sin(en.phase*0.6)*18; en.shotTimer-=dt; if(en.shotTimer<=0){ en.shotTimer=600+Math.random()*600; const bullets=6+Math.floor(Math.random()*3); for(let k=0;k<bullets;k++){ const ang=Math.PI/2+(k-(bullets-1)/2)*0.18+(Math.random()*0.12-0.06); const sp=3+Math.random()*2; eBullets.push({x:en.x+Math.sin(k)*8,y:en.y+en.h*0.4,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,w:8,h:14,color:'#ffb3e6'}); } } } else { const t=performance.now()/700+en.offsetPhase; en.y+=Math.sin(t)*0.12*en.speedFactor; const baseX=W*0.12+en.col*(W*0.14); const shift=Math.sin(performance.now()/1000+en.col)*18*en.speedFactor; en.x=baseX+shift; en.shotTimer-=dt; if(en.shotTimer<=0){ en.shotTimer=800+Math.random()*1400; const speed=3+Math.random()*1.5; eBullets.push({x:en.x,y:en.y+en.h*0.5,vx:0,vy:speed,w:6,h:12,color:'#ffb3e6'}); } } }); eBullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy;}); for(let i=eBullets.length-1;i>=0;i--) if(eBullets[i].y>H+60||eBullets[i].x<-60||eBullets[i].x>W+60) eBullets.splice(i,1);
+ for(let i=player.bullets.length-1;i>=0;i--){ const b=player.bullets[i]; for(let j=0;j<enemies.length;j++){ const en=enemies[j]; if(!en.alive) continue; const ex=en.x-en.w/2,ey=en.y-en.h/2; if(pointInRect(b.x,b.y,ex,ey,en.w,en.h)){ player.bullets.splice(i,1); if(en.boss){ en.hp-=1; if(en.hp<=0){ en.alive=false; score+=2000; playExplosion(); } else { score+=60; playExplosion(); } } else { en.alive=false; score+=150; playExplosion(); } break; } } }
+ for(let i=eBullets.length-1;i>=0;i--){ const b=eBullets[i]; if(pointInRect(b.x,b.y,player.x-player.w/2,player.y-player.h/2,player.w,player.h)){ eBullets.splice(i,1); player.hp-=1; playHit(); if(player.hp<=0){ player.hp=0; gameOver=true; playing=false; statusEl.textContent='Status: Game Over'; showGameOver(); playGameOver(); stopBossMusic(); } } }
+ enemies.forEach(en=>{ if(en.alive&&rectsOverlap(en.x-en.w/2,en.y-en.h/2,en.w,en.h,player.x-player.w/2,player.y-player.h/2,player.w,player.h)){ en.alive=false; player.hp-=1; playExplosion(); if(player.hp<=0){ player.hp=0; gameOver=true; playing=false; showGameOver(); stopBossMusic(); playGameOver(); } } }); const stillAlive=enemies.some(e=>e.alive); if(!stillAlive&&!gameOver){ levelComplete=true; playing=false; statusEl.textContent='Status: Level Complete'; triggerVictory(); } scoreEl.textContent='Score: '+score; }
+
+// render
+function render(){ ctx.clearRect(0,0,W,H); for(let i=0;i<80;i++){ const sx=(i*57)%W; const sy=(i*37)%H; ctx.fillStyle=(i%9===0)?'rgba(255,255,255,0.12)':'rgba(255,255,255,0.04)'; ctx.fillRect(sx,sy,1,1); } player.bullets.forEach(drawBullet); enemies.forEach(en=>{ if(en.alive) drawEnemy(en); else { ctx.save(); ctx.translate(en.x,en.y); ctx.fillStyle='rgba(255,200,160,0.06)'; ctx.beginPath(); ctx.arc(0,0,18,0,Math.PI*2); ctx.fill(); ctx.restore(); } }); eBullets.forEach(b=>drawBullet(b)); drawPlayer(player.x,player.y,player.w,player.h); if(paused&&!gameOver){ ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(W/2-200,H/2-48,400,96); ctx.fillStyle='white'; ctx.font='22px sans-serif'; ctx.textAlign='center'; ctx.fillText('PAUSED',W/2,H/2+6);} if(gameOver){ ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,H); } }
+
+function loop(t){ const dt=t-last; last=t; update(dt); render(); requestAnimationFrame(loop);} requestAnimationFrame(loop);
+
+// UI build
+function buildLevelSelect(){ levelSelect.innerHTML=''; for(let i=1;i<=5;i++){ const div=document.createElement('div'); div.className='lvlBtn'; div.dataset.level=i; if(!unlocked[i-1]){ div.classList.add('locked'); div.innerHTML=`<div style="font-weight:700">Level ${i}</div><div style="font-size:12px;opacity:.85">Locked</div><div class='lockIcon'>🔒</div>`; } else { div.innerHTML=`<div style="font-weight:700">Level ${i}</div><div style="font-size:12px;opacity:.85">${i===5?'Boss Level':''}</div>`; } div.addEventListener('click',()=>{ if(!unlocked[i-1]){ showMessage('Level Locked'); } else { openLevel(i); } }); levelSelect.appendChild(div); } }
+function showMessage(text,time=1400){ msgEl.textContent=text; msgEl.style.display='block'; setTimeout(()=>msgEl.style.display='none',time); }
+function openHome(){ homeScreen.style.display='block'; canvas.style.display='none'; overlay.style.display='none'; statusEl.textContent='Status: Ready'; stopBossMusic(); }
+function openLevel(n){ homeScreen.style.display='none'; canvas.style.display='block'; overlay.style.display='block'; setupLevel(n); }
+
+// overlays: game over and level complete
+function showGameOver(){ overlay.innerHTML=''; overlay.style.display='block'; overlay.style.position='fixed'; overlay.style.left='0'; overlay.style.top='0'; overlay.style.width='100%'; overlay.style.height='100%'; overlay.style.zIndex=9999; const box=document.createElement('div'); box.style.position='fixed'; box.style.left='50%'; box.style.transform='translateX(-50%)'; box.style.bottom='30px'; box.style.maxWidth='520px'; box.style.width='90%'; box.style.textAlign='center'; box.style.background='rgba(0,0,0,0.6)'; box.style.padding='14px'; box.style.borderRadius='12px'; box.style.display='flex'; box.style.flexDirection='column'; box.style.alignItems='center'; box.style.gap='10px'; box.innerHTML=`<div style="font-size:20px;color:#ffd6f0;font-weight:700">GAME OVER</div><div style="font-size:14px">You reached Score: ${score}</div><div style="display:flex;gap:12px;justify-content:center;margin-top:6px"><button id="ovRestart" class="bigBtn">Restart</button><button id="ovHome" class="bigBtn">Home</button></div>`; overlay.appendChild(box); document.getElementById('ovRestart').addEventListener('click',()=>{ overlay.innerHTML=''; overlay.style.display='none'; openLevel(currentLevel); }); document.getElementById('ovHome').addEventListener('click',()=>{ overlay.innerHTML=''; overlay.style.display='none'; openHome(); buildLevelSelect(); }); }
+
+// Victory: animation + sound then show original buttons
+function triggerVictory(){ // show burst + text + sound then original overlay
+  // burst
+  const burst=document.createElement('div'); burst.style.position='absolute'; burst.style.left='50%'; burst.style.top='50%'; burst.style.width='160px'; burst.style.height='160px'; burst.style.borderRadius='50%'; burst.style.background='radial-gradient(circle,rgba(255,255,255,0.9),rgba(102,224,255,0))'; burst.style.transform='translate(-50%,-50%)'; burst.style.animation='burst 1.4s ease-out forwards'; overlay.appendChild(burst);
+  // win text
+  const win=document.createElement('div'); win.textContent='🏆 VICTORY!'; win.style.position='absolute'; win.style.left='50%'; win.style.top='42%'; win.style.transform='translate(-50%,-50%)'; win.style.fontSize='52px'; win.style.fontWeight='900'; win.style.color='#66e0ff'; win.style.textShadow='0 0 14px #fff'; win.style.animation='winText 1.6s ease-out forwards'; overlay.appendChild(win);
+  // small particle sparks (canvas overlay)
+  const sparks=[]; for(let i=0;i<18;i++){ sparks.push({x:W/2,y:H/2,vx:(Math.random()-0.5)*6,vy:(Math.random()-0.9)*6,life:1}); }
+  let sparkT=0; function drawSparks(){ sparkT++; const sctx=ctx; sparks.forEach(s=>{ if(s.life>0){ s.x+=s.vx; s.y+=s.vy; s.vy+=0.12; s.life-=0.02; sctx.fillStyle='rgba(255,220,120,'+Math.max(0,s.life)+')'; sctx.beginPath(); sctx.arc(s.x,s.y,3,0,Math.PI*2); sctx.fill(); }}); if(sparkT<80) requestAnimationFrame(drawSparks); }
+  requestAnimationFrame(drawSparks);
+  // win sound
+  playWin();
+  // unlock next
+  if(currentLevel<5){ unlocked[currentLevel]=1; localStorage.setItem(STORAGE_KEY,JSON.stringify(unlocked)); }
+  // after delay show the original complete overlay box
+  setTimeout(()=>{ // reuse previous showLevelComplete box content
+    const box=document.createElement('div'); box.style.position='fixed'; box.style.left='50%'; box.style.transform='translateX(-50%)'; box.style.bottom='30px'; box.style.maxWidth='520px'; box.style.width='90%'; box.style.textAlign='center'; box.style.background='rgba(0,0,0,0.6)'; box.style.padding='14px'; box.style.borderRadius='12px'; box.style.display='flex'; box.style.flexDirection='column'; box.style.alignItems='center'; box.style.gap='10px'; box.innerHTML=`<div style="font-size:20px;color:#66e0ff;font-weight:700">LEVEL COMPLETE</div><div style="font-size:14px">Score: ${score}</div><div style="display:flex;gap:12px;justify-content:center;margin-top:6px">${currentLevel<5?'<button id="ovNext" class="bigBtn">Next Level</button>':''}<button id="ovHome" class="bigBtn">Home</button></div>`; overlay.appendChild(box); if(currentLevel<5) document.getElementById('ovNext').addEventListener('click',()=>{ overlay.innerHTML=''; overlay.style.display='none'; openLevel(currentLevel+1); buildLevelSelect(); }); document.getElementById('ovHome').addEventListener('click',()=>{ overlay.innerHTML=''; overlay.style.display='none'; openHome(); buildLevelSelect(); }); },1400);
+}
+
+// controls
+pauseBtn.addEventListener('click',()=>{ paused=!paused; statusEl.textContent=paused?'Status: Paused':'Status: Playing'; }); window.addEventListener('keydown',e=>{ if(e.code==='KeyP'){ paused=!paused; statusEl.textContent=paused?'Status: Paused':'Status: Playing'; } if(e.code==='KeyR'){ if(!homeScreen.style.display||homeScreen.style.display==='none') openLevel(currentLevel); }});
+
+// init
+buildLevelSelect(); openHome();
+
+</script>
+</body>
+</html>
